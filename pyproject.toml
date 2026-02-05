@@ -1,0 +1,21 @@
+[project]
+name = "mini-rag"
+version = "0.1.0"
+description = "Mini RAG pipeline over emails: sentence-transformers + Qdrant + Mistral"
+readme = "README.md"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v --tb=short"
+markers = [
+    "e2e: end-to-end tests (require Qdrant URL in env)",
+]
+
+[tool.coverage.run]
+source = ["rag"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = ["if __name__ == .__main__.:", "raise NotImplementedError"]

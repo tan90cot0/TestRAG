@@ -1,0 +1,20 @@
+# RAG pipeline — production dependencies
+
+# Embeddings
+sentence-transformers>=3.0.0,<4.0.0
+
+# Vector store (Qdrant)
+qdrant-client>=1.7.0,<2.0.0
+
+# LLM (Mistral)
+mistralai>=1.0.0,<2.0.0
+
+# Config and env
+python-dotenv>=1.0.0,<2.0.0
+
+# Testing
+pytest>=7.0.0,<9.0.0
+pytest-cov>=4.0.0,<6.0.0
+
+# Type hints
+typing-extensions>=4.0.0,<5.0.0
