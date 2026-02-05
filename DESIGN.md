@@ -19,9 +19,11 @@ emails/*.txt → [Ingest] → ParsedEmail[]
                 ↓
     [Qdrant] ← upsert(ids, vectors, payload)
                 ↓
-    [Retrieve] ← query vector + optional payload filter → top-k chunks
+    [User question] → [Query plan] (Mistral) → structured JSON {"queries": ["q1", "q2", ...]}
                 ↓
-    [Generate] (Mistral) ← prompt(context, query) → answer
+    [Retrieve] ← each planned query (embed + Qdrant); merge and dedupe → top-k chunks
+                ↓
+    [Generate] (Mistral) ← prompt(context, original question) → answer
 ```
 
 ---
@@ -60,15 +62,24 @@ emails/*.txt → [Ingest] → ParsedEmail[]
 - **Pro**: Managed vector DB with filtering; payload indexes allow fast subject/from/to filters; batching avoids timeouts on large upserts.
 - **Con**: Requires Qdrant URL (and API key for cloud). Index build is not incremental (collection is recreated on each full index run).
 
-### 3.5 Retrieval
+### 3.5 Query planning (Mistral → structured JSON)
 
-**Choice**: Embed query with the same model (padded to 1536), then `query_points` with optional Qdrant filter built from a simple `where` dict (e.g. `{"subject": "Meeting Request"}`). Return top-k by cosine similarity.
+**Choice**: Before retrieval, the user question is sent to Mistral with a system prompt that asks for 1 or more search queries in JSON: `{"queries": ["query1", "query2", ...]}`. Mistral can rephrase the question or split it into multiple queries (e.g. "budget and training" → "budget approval", "training workshop"). On parse or API failure, the pipeline falls back to using the original question as a single query.
 
 **Tradeoffs**:
-- **Pro**: Same embedding space for index and query; filters narrow results by metadata without re-ranking.
+- **Pro**: Improves retrieval for multi-part questions; the model can decide how many and what queries to run.
+- **Con**: Extra Mistral call (latency and cost); depends on the model following the JSON schema (we strip markdown code blocks and fall back on invalid JSON).
+- **Implementation**: `rag/query_plan.py`; pipeline runs each planned query, merges results, dedupes by (source_file, text), sorts by score, and takes top-k before generation.
+
+### 3.6 Retrieval
+
+**Choice**: Embed each planned query with the same model (padded to 1536), then `query_points` with optional Qdrant filter built from a simple `where` dict (e.g. `{"subject": "Meeting Request"}`). Results from all queries are merged, deduped, sorted by score, and truncated to top-k.
+
+**Tradeoffs**:
+- **Pro**: Same embedding space for index and query; filters narrow results by metadata without re-ranking; multiple queries improve coverage for compound questions.
 - **Con**: No hybrid (keyword + vector) or re-ranker; top-k is fixed per request.
 
-### 3.6 Generation (Mistral)
+### 3.7 Generation (Mistral)
 
 **Choice**: Mistral chat API with a system prompt that instructs the model to answer only from the provided context and to cite sources when possible. User message = concatenated context chunks + question.
 
@@ -76,7 +87,7 @@ emails/*.txt → [Ingest] → ParsedEmail[]
 - **Pro**: Clear instruction to reduce hallucination; source labels in context support traceability.
 - **Con**: Depends on external API and key; no fallback model. Prompt design is minimal; more structured prompts (e.g. strict templates) could improve consistency.
 
-### 3.7 Configuration
+### 3.8 Configuration
 
 **Choice**: All config via environment variables loaded from `.env` (python-dotenv) at import time: API keys, Qdrant URL, collection name, vector size, model names, top-k, optional timeouts and batch sizes.
 
@@ -138,6 +149,7 @@ Running `python cli.py eval` (or `pytest tests/ -v`) executes this full suite. E
 | `rag/chunking.py` | Paragraph chunking and metadata. |
 | `rag/embedding.py` | sentence-transformers; pad to 1536. |
 | `rag/store.py` | Qdrant client; create collection; payload indexes; batched upsert. |
+| `rag/query_plan.py` | Mistral: user question → structured JSON search queries. |
 | `rag/retrieve.py` | Query embedding; Qdrant query_points; filter translation. |
 | `rag/generate.py` | Mistral client; prompt; chat completion. |
 | `rag/pipeline.py` | Orchestrate index and ask. |

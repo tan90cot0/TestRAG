@@ -69,26 +69,42 @@ class TestRetrievalQuality:
             assert r.metadata.get("subject") == subject
 
 
+def _plan_response():
+    """Response for query-planning call: structured JSON with search queries."""
+    return MagicMock(
+        choices=[
+            MagicMock(message=MagicMock(content='{"queries": ["What is this email about?"]}'))
+        ]
+    )
+
+
+def _gen_response():
+    """Response for generation call."""
+    return MagicMock(
+        choices=[
+            MagicMock(message=MagicMock(content="The email discusses scheduling a meeting to review strategy and performance metrics."))
+        ]
+    )
+
+
 class TestGenerationQuality:
     """Generation should use context and not hallucinate."""
 
     @pytest.fixture
     def mock_mistral(self):
-        """Patch Mistral to return a fixed response (no API key needed)."""
-        with patch("rag.generate.Mistral") as MockMistral:
+        """Patch Mistral: first call = query plan (JSON), second call = generate answer."""
+        with patch("rag.generate.Mistral") as MockGen, patch("rag.query_plan.Mistral") as MockPlan:
             mock_client = MagicMock()
-            mock_response = MagicMock()
-            mock_response.choices = [
-                MagicMock(message=MagicMock(content="The email discusses scheduling a meeting to review strategy and performance metrics."))
-            ]
-            mock_client.chat.complete.return_value = mock_response
-            MockMistral.return_value = mock_client
+            mock_client.chat.complete.side_effect = [_plan_response(), _gen_response()]
+            MockGen.return_value = mock_client
+            MockPlan.return_value = mock_client
             yield mock_client
 
     def test_generate_receives_context_and_query(self, pipeline_with_index, mock_mistral):
-        """Mistral is called with messages containing context and query."""
+        """Mistral is called for plan then for generate; generate receives context and query."""
         answer, results = pipeline_with_index.ask("What is this email about?", top_k=2)
-        assert mock_mistral.chat.complete.called
+        assert mock_mistral.chat.complete.call_count >= 2
+        # Second call is generate (context + question)
         call_kwargs = mock_mistral.chat.complete.call_args
         messages = call_kwargs.kwargs.get("messages") or call_kwargs[1].get("messages")
         assert messages
@@ -124,11 +140,17 @@ class TestPipelineIntegration:
     """Full pipeline: index and ask."""
 
     def test_ask_without_results_returns_fallback(self, pipeline_with_index):
-        """When retrieval returns no results, we return a fallback message (no LLM call)."""
-        answer, results = pipeline_with_index.ask(
-            "What happened?",
-            top_k=2,
-            where={"subject": {"$eq": "Nonexistent Subject 12345"}},
-        )
+        """When retrieval returns no results, we return a fallback message (no generate call)."""
+        with patch("rag.query_plan.Mistral") as MockMistral:
+            mock_client = MagicMock()
+            mock_client.chat.complete.return_value = MagicMock(
+                choices=[MagicMock(message=MagicMock(content='{"queries": ["What happened?"]}'))]
+            )
+            MockMistral.return_value = mock_client
+            answer, results = pipeline_with_index.ask(
+                "What happened?",
+                top_k=2,
+                where={"subject": {"$eq": "Nonexistent Subject 12345"}},
+            )
         assert len(results) == 0
         assert "no relevant" in answer.lower() or "don't have" in answer.lower()
